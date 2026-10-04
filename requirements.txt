@@ -1,0 +1,6 @@
+streamlit
+tensorflow==2.20.0
+numpy
+opencv-python-headless
+Pillow
+huggingface_hub<2.0
