@@ -354,4 +354,3 @@ else:
         "Upload an MRI image and its matching ground-truth "
         "mask to generate predictions and evaluation metrics."
     )
-```
