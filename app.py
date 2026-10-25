@@ -1,140 +1,16 @@
-
+```python
 import streamlit as st
-import tensorflow as tf
 import numpy as np
 import cv2
+import tensorflow as tf
+
 from PIL import Image
 from huggingface_hub import hf_hub_download
 
-# --------------------------------------------------
-# Configuration
-# --------------------------------------------------
 
-IMG_SIZE = 256
-
-HF_REPO_ID = "Bhanu624/brain-tumor-segmentation"
-MODEL_FILENAME = "brain_tumor_model.keras"
-
-
-# --------------------------------------------------
-# Load Model
-# --------------------------------------------------
-
-@st.cache_resource
-def load_model():
-
-    model_path = hf_hub_download(
-        repo_id=HF_REPO_ID,
-        filename=MODEL_FILENAME,
-        repo_type="model"
-    )
-
-    model = tf.keras.models.load_model(
-        model_path,
-        compile=False
-    )
-
-    return model
-
-
-# --------------------------------------------------
-# Image Preprocessing
-# --------------------------------------------------
-
-def preprocess_image(image):
-
-    image = np.array(image)
-
-    # Convert RGB/RGBA to grayscale
-    if len(image.shape) == 3:
-
-        if image.shape[2] == 4:
-            image = cv2.cvtColor(image, cv2.COLOR_RGBA2GRAY)
-
-        else:
-            image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-
-    # Resize
-    image = cv2.resize(
-        image,
-        (IMG_SIZE, IMG_SIZE),
-        interpolation=cv2.INTER_AREA
-    )
-
-    # Convert grayscale to 3 channels
-    image = np.stack(
-        [image, image, image],
-        axis=-1
-    )
-
-    # EfficientNet preprocessing is already handled
-    # inside the Keras model
-    image = image.astype(np.float32)
-
-    # Add batch dimension
-    image = np.expand_dims(image, axis=0)
-
-    return image
-
-
-# --------------------------------------------------
-# Prediction
-# --------------------------------------------------
-
-def predict_mask(model, image):
-
-    prediction = model.predict(
-        image,
-        verbose=0
-    )
-
-    prediction = prediction[0, :, :, 0]
-
-    # Threshold
-    mask = (prediction >= 0.5).astype(np.uint8)
-
-    return mask
-
-
-# --------------------------------------------------
-# Overlay
-# --------------------------------------------------
-
-def create_overlay(original_image, mask):
-
-    original = np.array(original_image)
-
-    original = cv2.resize(
-        original,
-        (IMG_SIZE, IMG_SIZE)
-    )
-
-    if len(original.shape) == 2:
-        original = cv2.cvtColor(
-            original,
-            cv2.COLOR_GRAY2RGB
-        )
-
-    overlay = original.copy()
-
-    # Red color for predicted tumor
-    overlay[mask == 1] = [255, 0, 0]
-
-    # Blend original + segmentation
-    result = cv2.addWeighted(
-        original,
-        0.65,
-        overlay,
-        0.35,
-        0
-    )
-
-    return result
-
-
-# --------------------------------------------------
-# Streamlit Interface
-# --------------------------------------------------
+# ==========================================
+# PAGE CONFIGURATION
+# ==========================================
 
 st.set_page_config(
     page_title="Brain Tumor Segmentation",
@@ -145,92 +21,338 @@ st.set_page_config(
 st.title("🧠 Brain Tumor Segmentation Using Deep Learning")
 
 st.write(
-    "EfficientNet-B1 + U-Net++ based MRI brain tumor segmentation"
-)
-
-st.info(
-    "Upload an MRI brain image to generate a predicted tumor segmentation mask."
-)
-
-uploaded_file = st.file_uploader(
-    "Upload MRI Image",
-    type=["jpg", "jpeg", "png"]
+    "Upload a brain MRI image and its corresponding "
+    "ground-truth tumor mask to evaluate the segmentation."
 )
 
 
-if uploaded_file is not None:
+# ==========================================
+# LOAD TRAINED MODEL
+# ==========================================
 
-    image = Image.open(uploaded_file)
+@st.cache_resource
+def load_trained_model():
 
-    st.subheader("Uploaded MRI")
-
-    st.image(
-        image,
-        caption="Original MRI Image",
-        use_container_width=True
+    model_path = hf_hub_download(
+        repo_id="Bhanu624/brain-tumor-segmentation",
+        filename="brain_tumor_model.keras"
     )
 
-    if st.button("🔍 Segment Tumor"):
+    model = tf.keras.models.load_model(
+        model_path,
+        compile=False
+    )
 
-        with st.spinner("Loading model and analyzing MRI..."):
+    return model
 
-            model = load_model()
 
-            processed_image = preprocess_image(image)
+try:
+    model = load_trained_model()
+except Exception as e:
+    st.error(f"Could not load the trained model: {e}")
+    st.stop()
 
-            mask = predict_mask(
-                model,
-                processed_image
-            )
 
-            overlay = create_overlay(
-                image,
-                mask
-            )
+# ==========================================
+# IMAGE PREPROCESSING
+# ==========================================
 
-        # --------------------------------------------------
-        # Display Results
-        # --------------------------------------------------
+IMG_SIZE = 256
 
-        col1, col2 = st.columns(2)
 
-        with col1:
+def preprocess_mri(uploaded_file):
 
-            st.subheader("Predicted Tumor Mask")
+    image = Image.open(uploaded_file).convert("L")
 
-            st.image(
-                mask * 255,
-                caption="Predicted Segmentation",
-                use_container_width=True
-            )
+    original_image = np.array(image)
 
-        with col2:
+    resized_image = cv2.resize(
+        original_image,
+        (IMG_SIZE, IMG_SIZE),
+        interpolation=cv2.INTER_AREA
+    )
 
-            st.subheader("Segmentation Overlay")
+    # Repeat grayscale image into three channels.
+    image_3channel = np.stack(
+        [resized_image] * 3,
+        axis=-1
+    )
 
-            st.image(
-                overlay,
-                caption="Tumor Highlighted in Red",
-                use_container_width=True
-            )
+    # EfficientNet preprocessing used in the project.
+    image_input = np.expand_dims(
+        image_3channel.astype(np.float32),
+        axis=0
+    )
 
-        # --------------------------------------------------
-        # Tumor Area
-        # --------------------------------------------------
+    return original_image, resized_image, image_input
 
-        tumor_pixels = np.sum(mask == 1)
 
-        total_pixels = mask.shape[0] * mask.shape[1]
+# ==========================================
+# GROUND-TRUTH MASK PREPROCESSING
+# ==========================================
 
-        tumor_percentage = (
+def preprocess_mask(uploaded_file):
+
+    mask_image = Image.open(uploaded_file).convert("L")
+
+    mask = np.array(mask_image)
+
+    mask = cv2.resize(
+        mask,
+        (IMG_SIZE, IMG_SIZE),
+        interpolation=cv2.INTER_NEAREST
+    )
+
+    # Convert grayscale mask to binary values.
+    mask = (mask > 127).astype(np.uint8)
+
+    return mask
+
+
+# ==========================================
+# CALCULATE EVALUATION METRICS
+# ==========================================
+
+def calculate_metrics(y_true, y_pred):
+
+    y_true = y_true.astype(bool)
+    y_pred = y_pred.astype(bool)
+
+    tp = np.logical_and(y_true, y_pred).sum()
+    tn = np.logical_and(~y_true, ~y_pred).sum()
+    fp = np.logical_and(~y_true, y_pred).sum()
+    fn = np.logical_and(y_true, ~y_pred).sum()
+
+    # Dice Similarity Coefficient
+    dice_denominator = (2 * tp) + fp + fn
+
+    dice = (
+        (2 * tp) / dice_denominator
+        if dice_denominator > 0
+        else 1.0
+    )
+
+    # Intersection over Union
+    iou_denominator = tp + fp + fn
+
+    iou = (
+        tp / iou_denominator
+        if iou_denominator > 0
+        else 1.0
+    )
+
+    # Precision
+    precision = (
+        tp / (tp + fp)
+        if (tp + fp) > 0
+        else 0.0
+    )
+
+    # Recall
+    recall = (
+        tp / (tp + fn)
+        if (tp + fn) > 0
+        else 0.0
+    )
+
+    # Pixel Accuracy
+    accuracy = (tp + tn) / (tp + tn + fp + fn)
+
+    return {
+        "DSC": dice,
+        "IoU": iou,
+        "Precision": precision,
+        "Recall": recall,
+        "Pixel Accuracy": accuracy
+    }
+
+
+# ==========================================
+# UPLOAD FILES
+# ==========================================
+
+col1, col2 = st.columns(2)
+
+with col1:
+    mri_file = st.file_uploader(
+        "Upload Brain MRI Image",
+        type=["png", "jpg", "jpeg"]
+    )
+
+with col2:
+    mask_file = st.file_uploader(
+        "Upload Ground-Truth Tumor Mask",
+        type=["png", "jpg", "jpeg"]
+    )
+
+
+# ==========================================
+# PREDICTION AND EVALUATION
+# ==========================================
+
+if mri_file is not None and mask_file is not None:
+
+    try:
+
+        original_image, resized_image, image_input = (
+            preprocess_mri(mri_file)
+        )
+
+        ground_truth = preprocess_mask(mask_file)
+
+        # Predict tumor probability for every pixel.
+        prediction = model.predict(
+            image_input,
+            verbose=0
+        )[0, :, :, 0]
+
+        # Convert probabilities into a binary mask.
+        predicted_mask = (prediction >= 0.5).astype(np.uint8)
+
+        # Calculate metrics against the actual mask.
+        metrics = calculate_metrics(
+            ground_truth,
+            predicted_mask
+        )
+
+        # Calculate predicted tumor area.
+        tumor_pixels = np.sum(predicted_mask)
+
+        total_pixels = predicted_mask.size
+
+        tumor_area = (
             tumor_pixels / total_pixels
         ) * 100
 
-        st.success(
-            f"Predicted tumor area: {tumor_percentage:.2f}%"
+        # ==========================================
+        # CREATE OVERLAY
+        # ==========================================
+
+        mri_rgb = cv2.cvtColor(
+            resized_image,
+            cv2.COLOR_GRAY2RGB
         )
 
-        st.warning(
-            "This application is an academic research prototype "
-            "and is not intended for clinical diagnosis."
+        overlay = mri_rgb.copy()
+
+        # Red indicates predicted tumor.
+        overlay[predicted_mask == 1] = [255, 0, 0]
+
+        # Blend original MRI and prediction.
+        overlay = cv2.addWeighted(
+            mri_rgb,
+            0.65,
+            overlay,
+            0.35,
+            0
         )
+
+        # ==========================================
+        # DISPLAY IMAGES
+        # ==========================================
+
+        st.subheader("Segmentation Results")
+
+        img1, img2, img3 = st.columns(3)
+
+        with img1:
+            st.image(
+                resized_image,
+                caption="Original MRI",
+                use_container_width=True
+            )
+
+        with img2:
+            st.image(
+                predicted_mask * 255,
+                caption="Predicted Tumor Mask",
+                use_container_width=True
+            )
+
+        with img3:
+            st.image(
+                overlay,
+                caption="Segmentation Overlay",
+                use_container_width=True
+            )
+
+        # ==========================================
+        # GROUND TRUTH
+        # ==========================================
+
+        st.subheader("Ground-Truth Mask")
+
+        st.image(
+            ground_truth * 255,
+            caption="Actual Tumor Mask",
+            width=300
+        )
+
+        # ==========================================
+        # TUMOR AREA
+        # ==========================================
+
+        st.subheader("Predicted Tumor Area")
+
+        st.metric(
+            label="Tumor Area (% of image pixels)",
+            value=f"{tumor_area:.2f}%"
+        )
+
+        # ==========================================
+        # EVALUATION METRICS
+        # ==========================================
+
+        st.subheader("Evaluation Metrics for This MRI")
+
+        st.caption(
+            "Metrics are calculated by comparing the predicted "
+            "mask with the uploaded ground-truth mask."
+        )
+
+        metric1, metric2, metric3, metric4, metric5 = (
+            st.columns(5)
+        )
+
+        metric1.metric(
+            "Dice (DSC)",
+            f"{metrics['DSC'] * 100:.2f}%"
+        )
+
+        metric2.metric(
+            "IoU",
+            f"{metrics['IoU'] * 100:.2f}%"
+        )
+
+        metric3.metric(
+            "Precision",
+            f"{metrics['Precision'] * 100:.2f}%"
+        )
+
+        metric4.metric(
+            "Recall",
+            f"{metrics['Recall'] * 100:.2f}%"
+        )
+
+        metric5.metric(
+            "Pixel Accuracy",
+            f"{metrics['Pixel Accuracy'] * 100:.2f}%"
+        )
+
+    except Exception as e:
+        st.error(f"Error processing the uploaded files: {e}")
+
+elif mri_file is not None or mask_file is not None:
+
+    st.info(
+        "Please upload both the MRI image and its "
+        "corresponding ground-truth tumor mask."
+    )
+
+else:
+
+    st.info(
+        "Upload an MRI image and its matching ground-truth "
+        "mask to generate predictions and evaluation metrics."
+    )
+```
